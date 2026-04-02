@@ -23,6 +23,16 @@ def _cfg_value(cfg: Mapping[str, Any] | None, key: str, default: float) -> float
     return float(value)
 
 
+def _vertex_or_default(a: jnp.ndarray, b: jnp.ndarray, default: float, eps: float) -> jnp.ndarray:
+    """Return -b/(2a) when |a|>=eps, else default, without invalid branch eval."""
+    return lax.cond(
+        jnp.abs(a) < eps,
+        lambda _: jnp.asarray(default, dtype=a.dtype),
+        lambda _: -b / (2.0 * a),
+        operand=None,
+    )
+
+
 def input_constraints_jax(x: jnp.ndarray, cfg: Mapping[str, Any] | None = None) -> jnp.ndarray:
     """Return the 49 Ship-D input constraints as a JAX array.
 
@@ -168,7 +178,7 @@ def input_constraints_jax(x: jnp.ndarray, cfg: Mapping[str, Any] | None = None) 
         return y
 
     # ---------- Bow geometry ----------
-    bow_zv = jnp.where(jnp.abs(BOW0) < eps, -1.0, -BOW1 / (2.0 * BOW0))
+    bow_zv = _vertex_or_default(BOW0, BOW1, -1.0, eps)
     bow_candidates = jnp.array(
         [
             BOW0 * Dd**2 + BOW1 * Dd,
@@ -186,7 +196,7 @@ def input_constraints_jax(x: jnp.ndarray, cfg: Mapping[str, Any] | None = None) 
 
     KEEL_BOW = BK1 / ((BK0 - Kappa_BOW * Lb) ** 2)
 
-    delta_bow_zv = jnp.where(jnp.abs(DELTA_BOW0) < eps, -1.0, -DELTA_BOW1 / (2.0 * DELTA_BOW0))
+    delta_bow_zv = _vertex_or_default(DELTA_BOW0, DELTA_BOW1, -1.0, eps)
     delta_bow_candidates = jnp.array(
         [
             DELTA_BOW0 * Dd**2 + DELTA_BOW1 * Dd,
@@ -223,7 +233,7 @@ def input_constraints_jax(x: jnp.ndarray, cfg: Mapping[str, Any] | None = None) 
     SK0 = transom(SK1)
     STERNRISE = SK1 / (SK0 - (Lb + Lm + Ls * Kappa_STERN)) ** 2
 
-    delta_stern_zv = jnp.where(jnp.abs(DELTA_STERN0) < eps, -1.0, -DELTA_STERN1 / (2.0 * DELTA_STERN0))
+    delta_stern_zv = _vertex_or_default(DELTA_STERN0, DELTA_STERN1, -1.0, eps)
     delta_stern_candidates = jnp.array(
         [
             DELTA_STERN0 * Dd**2 + DELTA_STERN1 * Dd,
@@ -300,8 +310,8 @@ def input_constraints_jax(x: jnp.ndarray, cfg: Mapping[str, Any] | None = None) 
         return Lb + Lm + DELTA_STERN0 * z**2 + DELTA_STERN1 * z + DELTA_STERN2
 
     # ---------- Bulb geometry (needed by stern constraints and bulb constraints) ----------
-    bb_on = bit_BB > 0.5
-    sb_on = bit_SB > 0.5
+    bb_on = bit_BB != 0.0
+    sb_on = bit_SB != 0.0
 
     FP = bow_profile(WL)
     BB_Prof = jnp.array(
@@ -350,7 +360,7 @@ def input_constraints_jax(x: jnp.ndarray, cfg: Mapping[str, Any] | None = None) 
         ]
     )
 
-    drift_zv = jnp.where(jnp.abs(DRIFT0) < eps, -1.0, -DRIFT1 / (2.0 * DRIFT0))
+    drift_zv = _vertex_or_default(DRIFT0, DRIFT1, -1.0, eps)
     drift_in_range = (drift_zv >= 0.0) & (drift_zv <= Dd)
     vert_drift = jnp.where(
         drift_in_range,
@@ -358,11 +368,11 @@ def input_constraints_jax(x: jnp.ndarray, cfg: Mapping[str, Any] | None = None) 
         jnp.array([-1.0, -1.0]),
     )
 
-    delta_bow_c_zv = jnp.where(jnp.abs(DELTA_BOW0) < eps, -1.0, -DELTA_BOW1 / (2.0 * DELTA_BOW0))
+    delta_bow_c_zv = _vertex_or_default(DELTA_BOW0, DELTA_BOW1, -1.0, eps)
     delta_bow_c_in_range = (delta_bow_c_zv >= 0.0) & (delta_bow_c_zv <= Dd)
     vert_delta_bow = jnp.where(delta_bow_c_in_range, -delta_bow(delta_bow_c_zv) + bow_profile(delta_bow_c_zv), -1.0)
 
-    bow_c_zv = jnp.where(jnp.abs(BOW0) < eps, -1.0, -BOW1 / (2.0 * BOW0))
+    bow_c_zv = _vertex_or_default(BOW0, BOW1, -1.0, eps)
     bow_c_in_range = (bow_c_zv >= 0.0) & (bow_c_zv <= Dd)
     vert_bow = jnp.where(bow_c_in_range, -delta_bow(bow_c_zv) + bow_profile(bow_c_zv), -1.0)
 
@@ -386,7 +396,7 @@ def input_constraints_jax(x: jnp.ndarray, cfg: Mapping[str, Any] | None = None) 
         ]
     )
 
-    delta_stern_c_zv = jnp.where(jnp.abs(DELTA_STERN0) < eps, -1.0, -DELTA_STERN1 / (2.0 * DELTA_STERN0))
+    delta_stern_c_zv = _vertex_or_default(DELTA_STERN0, DELTA_STERN1, -1.0, eps)
     delta_stern_c_in_range = (delta_stern_c_zv >= 0.0) & (delta_stern_c_zv <= Dd)
     vert_delta_stern = jnp.where(
         delta_stern_c_in_range,
@@ -416,7 +426,7 @@ def input_constraints_jax(x: jnp.ndarray, cfg: Mapping[str, Any] | None = None) 
     bb_bad = jnp.array([1.0, 1.0, 1.0])
     C_bb_03 = jnp.where(Beta == 0.0, bb_base, jnp.where(Rk > 0.0, bb_rk, bb_bad))
 
-    bb_dzv = jnp.where(jnp.abs(DELTA_BOW0) < eps, -1.0, -DELTA_BOW1 / (2.0 * DELTA_BOW0))
+    bb_dzv = _vertex_or_default(DELTA_BOW0, DELTA_BOW1, -1.0, eps)
     bb_vert = jnp.where((bb_dzv >= 0.0) & (bb_dzv <= WL), delta_bow(bb_dzv) - BB_Prof[5], -1.0)
     C_bb_36 = jnp.array([BB_Prof[5] - delta_bow(0.0), BB_Prof[5] - delta_bow(WL), bb_vert])
     C_bb = jnp.where(bb_on, jnp.concatenate([C_bb_03, C_bb_36]), -jnp.ones((6,)))
@@ -435,7 +445,7 @@ def input_constraints_jax(x: jnp.ndarray, cfg: Mapping[str, Any] | None = None) 
     sb_bad = jnp.array([1.0, 1.0, 1.0, 1.0])
     C_sb_610 = jnp.where(Beta == 0.0, sb_base, jnp.where(Rk > 0.0, sb_rk, sb_bad))
 
-    sb_dzv = jnp.where(jnp.abs(DELTA_STERN0) < eps, -1.0, -DELTA_STERN1 / (2.0 * DELTA_STERN0))
+    sb_dzv = _vertex_or_default(DELTA_STERN0, DELTA_STERN1, -1.0, eps)
     sb_vert = jnp.where((sb_dzv >= 0.0) & (sb_dzv <= WL * HSBOA), delta_stern(sb_dzv) - SB_Prof[5], -1.0)
     C_sb_1013 = jnp.array(
         [
@@ -455,4 +465,3 @@ def input_constraints_jax(x: jnp.ndarray, cfg: Mapping[str, Any] | None = None) 
 def _jacobian_checks_once(x: jnp.ndarray, cfg: Mapping[str, Any] | None = None) -> tuple[jnp.ndarray, jnp.ndarray]:
     f = lambda x_in: input_constraints_jax(x_in, cfg)
     return jax.jacrev(f)(x), jax.jacfwd(f)(x)
-
