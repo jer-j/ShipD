@@ -179,8 +179,45 @@ Also provided, for auditing the frozen-plan route:
 topology-preserving perturbation) and `check_box_topology` (is the box
 *interior* actually safe? — generally not).
 
-Not covered: bulbous hulls still need the plan's root initializers and fillet
-branch flags.
+### All hulls, including bulbs (`shipd_jax.universal_full`)
+
+`universal.py` above covers bulb-free hulls only. `universal_full.py` removes
+that restriction. The insight is that the plan freezes two different kinds of
+thing and **only the array shapes have to be static**:
+
+| plan entry | what it is | must be static? |
+|---|---|---|
+| `pts_bow/mid/stern` | array **shapes** | yes |
+| `bb` / `sb` | is the bulb present at this waterline? | no |
+| `is_ellipse` | ellipse or parabola at this height? | no |
+| `sb_branch_a` | which stern-fillet branch? | no |
+| `bb_x0` | which root of the fillet cubic? | no |
+
+Fix the shapes with a global scalar and every remaining flag becomes a *value*
+decision that `lax.cond` / `jnp.where` evaluates from the traced design vector —
+including the flags that depend on *combinations* of variables, which is exactly
+where per-axis bounds on the frozen plan break down. `cubic_root_real_parts`
+replaces the frozen `np.roots` initializer with a closed-form differentiable
+solver (matches `np.roots` to ~3e-9 over 4000 random cubics, including the
+complex-pair real-part convention the reference relies on).
+
+Validated across all twelve sample hulls: the Michell offset grid matches the
+reference to **~1e-13 or exactly** (bulbed hulls included, so no wave-drag
+penalty); hydrostatics differ only by sample placement (~0.1 % LOA mean surface
+distance); **45/45 finite gradients** on every bulbed hull with AD-vs-FD ~1e-6,
+including bulb parameters that previously could not be varied at all.
+
+`lax.cond` is used for the per-waterline bulb branch and the double-where
+pattern for elementwise math — the two are not interchangeable. `lax.cond`
+evaluates only the taken branch and so avoids NaN gradients from an invalid
+untaken branch; `jnp.where` always evaluates both and does not.
+
+**One deliberate departure:** `hull.py` reproduces the original's double-count
+of a Cw station that lands exactly on `delta_bow(z)`; `universal_full.py` does
+not (it masks each station once). This only matters for hulls whose `delta_bow`
+is constant in z — the Wigley hull here, where the grids differ by ~1.6e-2
+(99 non-zero stations vs the reference's 100). Use `gen_pc_for_cw` if you need
+to reproduce the published dataset numbers exactly.
 
 `shipd_jax.iges128` is a small reader for IGES entity-128 rational B-spline
 surfaces, used to compare against published hull geometry (e.g. the SIMMAN
@@ -244,10 +281,12 @@ analytic Wigley curve) is `Cw = Rw / (rho U^2 L^2)` — no factor 1/2.
 |---|---|
 | `hull.py` | parameter parsing, all sectional geometry, fillets, plans, point clouds, hydrostatics |
 | `universal.py` | plan-free (recompile-free) pipeline for bulb-free hulls; topology-safe bounds tooling |
+| `universal_full.py` | plan-free pipeline for **all** hulls incl. bulbs, via `lax.cond` + closed-form traced cubic roots |
 | `viz.py` | reusable visualizations: resistance curves, gradient/Jacobian/KKT diagnostics, 3D rendering, lines drawings, shape sensitivity |
 | `iges128.py` | minimal IGES entity-128 NURBS reader (for comparing against published geometry) |
 | `ShipD_JAX_Analysis.ipynb` | paper reproduction + differentiability showcase (see above) |
 | `ShipD_JAX_Optimizer_Readiness.ipynb` | recompilation study (bounds / `lax.cond` / plan-free rewrite), sensitivity validation, Fig. 7 draft reverse-engineering, Chamfer audit vs. the official SIMMAN 5415 |
+| `ShipD_JAX_Universal_Validation.ipynb` | validation of the all-hull plan-free pipeline (incl. bulbs), `lax.cond`-vs-`jnp.where` NaN experiment, bulb sensitivity study, and the DTMB 5415 sonar-dome parameterization limit |
 | `constraints.py` | the 49 feasibility constraints |
 | `michell.py` | vectorized Michell integral, ITTC friction line, drag/interp helpers |
 | `stl_export.py` | reference-exact STL mesh generation (concrete) |

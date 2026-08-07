@@ -44,6 +44,22 @@ selection itself: where the selected root changes, the geometry genuinely
 jumps.  That is a property of the parameterization, not of this implementation
 -- see :func:`branch_switch_report` for locating such points before handing the
 model to an optimizer.
+
+One deliberate departure from the reference
+-------------------------------------------
+:mod:`shipd_jax.hull` faithfully reproduces a quirk of the original code: when
+a Cw grid station falls *exactly* on ``delta_bow(z)``, the original's section
+filters count that station twice and its offset array shifts by one slot from
+there on (``CwWLPlan.dup_k`` replicates this).  This module does **not**
+reproduce that double-count -- it simply masks each station once.
+
+For most hulls the station never lands exactly on the boundary and the two
+agree to ~1e-13.  For a hull whose ``delta_bow`` is constant in z the
+coincidence happens on *every* waterline: the Wigley hull is the case in this
+dataset, where the offset grids differ by ~1.6e-2 (99 non-zero stations here
+versus 100 in the reference).  The behaviour here is the geometrically correct
+one; use :func:`shipd_jax.gen_pc_for_cw` if you need to reproduce the published
+dataset numbers exactly.
 """
 from __future__ import annotations
 
