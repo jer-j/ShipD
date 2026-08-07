@@ -176,6 +176,41 @@ def _max_root_at_least(r1, r2, thr, fallback):
 
 
 # =============================================================================
+# Bulb half-breadths evaluated over the FULL station array
+# =============================================================================
+#
+# The reference evaluates half_beam_bb / half_beam_sb only on the bulb's own
+# x-interval. The plan-free code evaluates them at every station and masks
+# afterwards, which walks them far outside that interval. Where the bulb has
+# (near) zero longitudinal extent -- Rx -> 0 at its vertical extremes -- the
+# ratio ((x - Cx)/Rx)**2 then overflows to +inf, and although the caller masks
+# the value away, reverse mode still carries a NaN back from it.
+#
+# Clamping the ratio fixes that. Inside the bulb's own range |u| <= 1, so the
+# clamp is inactive and values are identical to the reference; outside, the
+# value is discarded by the caller anyway.
+
+_U_CLAMP = 1e6
+
+
+def _half_beam_bb_safe(h: Hull, z, x):
+    Rz = jnp.where(z >= h.BB_Prof[2], h.BB_Prof[1], h.BB_Prof[2])
+    Ry = _sqrt_abs(1.0 - ((z - h.BB_Prof[2]) / _safe(Rz)) ** 2.0) * h.BB_Prof[3]
+    Rx = h.BB_Prof[5] - bb_profile(h, z)
+    u = jnp.clip((x - h.BB_Prof[5]) / _safe(Rx), -_U_CLAMP, _U_CLAMP)
+    return jnp.where(x >= h.BB_Prof[5], Ry, _sqrt_abs(1.0 - u * u) * Ry)
+
+
+def _half_beam_sb_safe(h: Hull, z, x):
+    zc = h.Hsb * h.WL * h.HSBOA
+    Rz = jnp.where(z >= zc, h.SB_Prof[1], h.SB_Prof[2])
+    Ry = _sqrt_abs(1.0 - ((z - zc) / _safe(Rz)) ** 2.0) * h.SB_Prof[3]
+    Rx = sb_profile(h, z) - h.SB_Prof[5]
+    u = jnp.clip((x - h.SB_Prof[5]) / _safe(Rx), -_U_CLAMP, _U_CLAMP)
+    return jnp.where(x <= h.SB_Prof[5], Ry, _sqrt_abs(1.0 - u * u) * Ry)
+
+
+# =============================================================================
 # Traced stern curve family (ellipse vs parabola chosen from a traced height)
 # =============================================================================
 
@@ -293,7 +328,7 @@ def _wl_bow_bb_t(h: Hull, z, n: int) -> jax.Array:
     x2 = delta_bow(h, z)
     x = _linspace(x1, x2, n)
     prof, Xr0, Xr1, profrad = _bb_fillet_t(h, z)
-    y = jnp.where(x <= Xr0, half_beam_bb(h, z, x),
+    y = jnp.where(x <= Xr0, _half_beam_bb_safe(h, z, x),
                   jnp.where(x < Xr1, _quartic(profrad, x), _cubic(prof, x)))
     return jnp.stack([x, y.at[0].set(0.0)], axis=1)
 
@@ -315,7 +350,7 @@ def _wl_stern_sb_t(h: Hull, bits: Bits, z, n: int) -> jax.Array:
     x = _linspace(x1, x2, n)
     parab, ell, use_ell, Xr0, Xr1, profrad = _sb_fillet_t(h, bits, z)
     y = jnp.where(x <= Xr0, _stern_curve_t(parab, ell, use_ell, x),
-                  jnp.where(x < Xr1, _quartic(profrad, x), half_beam_sb(h, z, x)))
+                  jnp.where(x < Xr1, _quartic(profrad, x), _half_beam_sb_safe(h, z, x)))
     return jnp.stack([jnp.concatenate([x[:n - 1], x2[None]]),
                       jnp.concatenate([y[:n - 1], jnp.zeros((1,))])], axis=1)
 
@@ -404,7 +439,7 @@ def universal_pc_for_cw(x, draft_frac, bits: Bits,
 
     def y_bow_bulb(zz):
         prof, Xr0, Xr1, profrad = _bb_fillet_t(h, zz)
-        return jnp.where(Xg <= Xr0, half_beam_bb(h, zz, Xg),
+        return jnp.where(Xg <= Xr0, _half_beam_bb_safe(h, zz, Xg),
                          jnp.where(Xg < Xr1, _quartic(profrad, Xg), _cubic(prof, Xg)))
 
     def y_bow_plain(zz):
@@ -414,7 +449,7 @@ def universal_pc_for_cw(x, draft_frac, bits: Bits,
         parab, ell, use_ell, Xr0, Xr1, profrad = _sb_fillet_t(h, bits, zz)
         return jnp.where(Xg <= Xr0, _stern_curve_t(parab, ell, use_ell, Xg),
                          jnp.where(Xg < Xr1, _quartic(profrad, Xg),
-                                   half_beam_sb(h, zz, Xg)))
+                                   _half_beam_sb_safe(h, zz, Xg)))
 
     def y_stern_plain(zz):
         parab, ell = solve_waterline_stern(h, bits, zz)
