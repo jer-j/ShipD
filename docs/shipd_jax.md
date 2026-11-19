@@ -159,7 +159,7 @@ stern-bulb fillet system is singular (`csv[8]` in the sample vectors) crash
 the original `gen_waterline_stern_SB`; here they produce non-finite values
 instead of raising.
 
-## Optimizer readiness: the plan-free pipeline (`shipd_jax.universal_full`)
+## Optimizer readiness: the plan-free pipeline (`shipd_jax.grid`)
 
 The reference-exact pipeline freezes discrete mesh topology (per-waterline
 integer point counts, curve-family flags, bulb-fillet root initializers) into
@@ -168,17 +168,17 @@ plan is baked into the JIT'd executable — and it goes stale almost immediately
 as an optimizer moves (measured: 7/41 waterlines wrong at ‖Δx‖≈0.0015,
 all 41 by ‖Δx‖≈0.015). Rebuilding it forces a 30–170 s XLA recompile.
 
-`shipd_jax.universal_full` removes the dependency for **every** hull type
-(supersedes an earlier bulb-free-only version, `shipd_jax.universal`, which
+`shipd_jax.grid` removes the dependency for **every** hull type
+(supersedes an earlier bulb-free-only version, the earlier bulb-free plan-free module, which
 handled only `bit_EP_S == bit_EP_T` and has since been removed):
 
 * `section_counts(ppw, bow_frac, stern_frac)` — point counts are fixed
   fractions of `ppw`, valid for any design vector. Sample *locations* still
   adapt continuously; only the *counts* are frozen.
-* `universal_pc_for_cw(x, draft_frac, bits, ...)` — the offset-grid mask
+* `michell_grid(x, draft_frac, bits, ...)` — the offset-grid mask
   becomes a traced `jnp.where`, and **the draft is a traced argument**, so one
   compile covers every (design, draft) pair and `dCw/d(draft)` exists.
-* `universal_pointcloud(x, bits, ...)` / `universal_volume_properties(x, bits, ...)`
+* `pointcloud(x, bits, ...)` / `grid_volume_properties(x, bits, ...)`
   — the plan-free hull surface and hydrostatics, used by
   `ship_mdo.models.shipd_resistance.ShipDResistanceJAX`, the CSDL bridge in
   [ship-mdo](https://github.com/jer-j/ship-mdo) that its optimization notebooks run.
@@ -205,7 +205,7 @@ differ only by sample placement and converge with resolution (4.7e-5 at
 would be stale** (5.4e-7 vs FD). Also separately validated bit-identical
 (~1e-14) against the reference for a **bulbous** hull, including at points
 far outside the baseline used to build the reference plan (see
-`examples/ShipD_JAX_Universal_Validation.ipynb`).
+`examples/ShipD_JAX_Grid_Validation.ipynb`).
 
 `shipd_jax.iges128` is a small reader for IGES entity-128 rational B-spline
 surfaces, used to compare against published hull geometry (e.g. the SIMMAN
@@ -275,12 +275,12 @@ only by one commented-out debug `print`).
 | file | contents |
 |---|---|
 | `hull.py` | parameter parsing, all sectional geometry, fillets, plans, point clouds, hydrostatics |
-| `universal_full.py` | plan-free (recompile-free) pipeline for **every** hull type; supersedes the removed bulb-free-only `universal.py` |
+| `grid.py` | plan-free (recompile-free) pipeline for **every** hull type; supersedes the removed bulb-free-only predecessor |
 | `viz.py` | reusable visualizations: resistance curves, gradient/Jacobian/KKT diagnostics, 3D rendering, lines drawings, shape sensitivity |
 | `iges128.py` | minimal IGES entity-128 NURBS reader (for comparing against published geometry) |
 | `ShipD_JAX_Analysis.ipynb` | paper reproduction + differentiability showcase (see above) |
-| `ShipD_JAX_Optimizer_Readiness.ipynb` | recompilation study (bounds / `lax.cond` / plan-free rewrite), sensitivity validation, Fig. 7 draft reverse-engineering, Chamfer audit vs. the official SIMMAN 5415 -- historical: some cells exercise the now-removed `universal.py`, kept for their recorded results/rationale rather than re-run |
-| `ShipD_JAX_Universal_Validation.ipynb` | validates `universal_full.py` (bulb-free and bulbous cases) bit-identical against the reference plan pipeline |
+| `ShipD_JAX_Optimizer_Readiness.ipynb` | recompilation study (bounds / `lax.cond` / plan-free rewrite), sensitivity validation, Fig. 7 draft reverse-engineering, Chamfer audit vs. the official SIMMAN 5415 -- historical: some cells exercise the now-removed `plan-free.py`, kept for their recorded results/rationale rather than re-run |
+| `ShipD_JAX_Grid_Validation.ipynb` | validates `grid.py` (bulb-free and bulbous cases) bit-identical against the reference plan pipeline |
 | `constraints.py` | the 49 feasibility constraints |
 | `michell.py` | vectorized Michell integral, ITTC friction line, drag/interp helpers |
 | `stl_export.py` | reference-exact STL mesh generation (concrete) |

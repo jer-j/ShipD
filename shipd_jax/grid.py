@@ -2,7 +2,7 @@
 """
 Fully general plan-free pipeline: **all** hull types, no recompilation.
 
-This supersedes the bulb-free-only :mod:`shipd_jax.universal`. The key
+This supersedes the bulb-free-only the earlier bulb-free plan-free module. The key
 realisation is that the reference plan freezes two *different* kinds of thing,
 and only one of them has to be static:
 
@@ -84,9 +84,11 @@ __all__ = [
     "branch_switch_report",
     "cubic_root_real_parts",
     "section_counts",
-    "universal_pc_for_cw",
-    "universal_pointcloud",
-    "universal_volume_properties",
+    "michell_grid",
+    "offsets",
+    "waterline_extent",
+    "pointcloud",
+    "grid_volume_properties",
 ]
 
 _TINY = 1e-30
@@ -395,7 +397,7 @@ def _wl_stern_sb_t(h: Hull, bits: Bits, z, n: int) -> jax.Array:
     )
 
 
-def _wl_universal(h: Hull, bits: Bits, z, n_bow: int, n_mid: int, n_stern: int):
+def _waterline(h: Hull, bits: Bits, z, n_bow: int, n_mid: int, n_stern: int):
     """One waterline, all branches traced, shapes fixed.
 
     ``lax.cond`` (not ``jnp.where``) guards the bulb sections: the untaken
@@ -442,7 +444,7 @@ def section_counts(
     return n_bow, n_mid, n_stern
 
 
-def universal_pointcloud(
+def pointcloud(
     x,
     bits: Bits,
     num_wl: int = 51,
@@ -462,12 +464,88 @@ def universal_pointcloud(
     rows = []
     for i in range(num_wl):
         z = Z[i]
-        xy = _wl_universal(h, bits, z, n_bow, n_mid, n_stern)
+        xy = _waterline(h, bits, z, n_bow, n_mid, n_stern)
         rows.append(jnp.concatenate([xy, jnp.broadcast_to(z, (ppw,))[:, None]], axis=1))
     return jnp.stack(rows, axis=0)
 
 
-def universal_pc_for_cw(x, draft_frac, bits: Bits, num_wl: int = 51, ppw: int = 301):
+def waterline_extent(x, bits: Bits, Z):
+    """``(x_bow, x_stern)`` of the waterline at each height ``Z``, ShipD frame.
+
+    Each is ``(len(Z),)``; the hull exists at height ``z`` for
+    ``x_bow < X < x_stern``.
+    """
+    h = build_hull(x, bits)
+    Z = jnp.asarray(Z, dtype=jnp.float64)
+    x_bow = bow_profile(h, Z)
+    if bits.BB:
+        x_bow = jnp.where(Z <= h.WL, bb_profile(h, Z), x_bow)
+    x_stern = stern_profile(h, bits, Z)
+    if bits.SB:
+        x_stern = jnp.where(Z <= h.HSBOA * h.WL, sb_profile(h, Z), x_stern)
+    return x_bow, x_stern
+
+
+def offsets(x, bits: Bits, X, Z):
+    """Half-breadths ``Y`` of shape ``(len(X), len(Z))`` at stations ``X``
+    (ShipD frame, any order) and heights ``Z`` (keel to deck), plan-free.
+
+    Every value is the analytic waterline curve evaluated at that ``(X, z)``;
+    it is 0 outside the waterline's bow/stern extent at that height.
+    """
+    h = build_hull(x, bits)
+    X = jnp.asarray(X, dtype=jnp.float64)
+    Z = jnp.asarray(Z, dtype=jnp.float64)
+    x_bow, x_stern = waterline_extent(x, bits, Z)
+
+    def y_bow_bulb(zz):
+        prof, Xr0, Xr1, profrad = _bb_fillet_t(h, zz)
+        return jnp.where(
+            X <= Xr0,
+            _half_beam_bb_safe(h, zz, X),
+            jnp.where(X < Xr1, _quartic(profrad, X), _cubic(prof, X)),
+        )
+
+    def y_bow_plain(zz):
+        return _cubic(solve_waterline_bow(h, zz), X)
+
+    def y_stern_bulb(zz):
+        parab, ell, use_ell, Xr0, Xr1, profrad = _sb_fillet_t(h, bits, zz)
+        return jnp.where(
+            X <= Xr0,
+            _stern_curve_t(parab, ell, use_ell, X),
+            jnp.where(X < Xr1, _quartic(profrad, X), _half_beam_sb_safe(h, zz, X)),
+        )
+
+    def y_stern_plain(zz):
+        parab, ell = solve_waterline_stern(h, bits, zz)
+        return _stern_curve_t(parab, ell, _use_ellipse(h, bits, zz), X)
+
+    cols = []
+    for i in range(Z.shape[0]):
+        z = Z[i]
+        y_bow = (
+            lax.cond(z < h.WL, y_bow_bulb, y_bow_plain, z)
+            if bits.BB
+            else y_bow_plain(z)
+        )
+        y_mid = jnp.broadcast_to(half_beam_midbody(h, z), X.shape)
+        y_stern = (
+            lax.cond(z < h.WL * h.HSBOA, y_stern_bulb, y_stern_plain, z)
+            if bits.SB
+            else y_stern_plain(z)
+        )
+
+        y = jnp.where(
+            X <= delta_bow(h, z),
+            y_bow,
+            jnp.where(X < delta_stern(h, z), y_mid, y_stern),
+        )
+        cols.append(jnp.where((X > x_bow[i]) & (X < x_stern[i]), y, 0.0))
+    return jnp.stack(cols, axis=1)
+
+
+def michell_grid(x, draft_frac, bits: Bits, num_wl: int = 51, ppw: int = 301):
     """``(X, Z, Y, WL)`` Michell inputs for **any** hull, plan-free.
 
     ``draft_frac`` is traced, so the draft is a differentiable input and one
@@ -476,66 +554,14 @@ def universal_pc_for_cw(x, draft_frac, bits: Bits, num_wl: int = 51, ppw: int = 
     h = build_hull(x, bits)
     draft = h.Dd * jnp.asarray(draft_frac, dtype=jnp.float64)
     Z = _linspace(0.00000001 * h.Dd, draft, num_wl)
-
-    x_bow = bow_profile(h, Z)
-    if bits.BB:
-        x_bow = jnp.where(Z <= h.WL, bb_profile(h, Z), x_bow)
-    x_stern = stern_profile(h, bits, Z)
-    if bits.SB:
-        x_stern = jnp.where(Z <= h.HSBOA * h.WL, sb_profile(h, Z), x_stern)
-
+    x_bow, x_stern = waterline_extent(x, bits, Z)
     WLlen = x_stern[-1] - x_bow[-1]
     Xg = _linspace(jnp.min(x_bow), jnp.max(x_stern), ppw)
-
-    def y_bow_bulb(zz):
-        prof, Xr0, Xr1, profrad = _bb_fillet_t(h, zz)
-        return jnp.where(
-            Xg <= Xr0,
-            _half_beam_bb_safe(h, zz, Xg),
-            jnp.where(Xg < Xr1, _quartic(profrad, Xg), _cubic(prof, Xg)),
-        )
-
-    def y_bow_plain(zz):
-        return _cubic(solve_waterline_bow(h, zz), Xg)
-
-    def y_stern_bulb(zz):
-        parab, ell, use_ell, Xr0, Xr1, profrad = _sb_fillet_t(h, bits, zz)
-        return jnp.where(
-            Xg <= Xr0,
-            _stern_curve_t(parab, ell, use_ell, Xg),
-            jnp.where(Xg < Xr1, _quartic(profrad, Xg), _half_beam_sb_safe(h, zz, Xg)),
-        )
-
-    def y_stern_plain(zz):
-        parab, ell = solve_waterline_stern(h, bits, zz)
-        return _stern_curve_t(parab, ell, _use_ellipse(h, bits, zz), Xg)
-
-    cols = []
-    for i in range(num_wl):
-        z = Z[i]
-        y_bow = (
-            lax.cond(z < h.WL, y_bow_bulb, y_bow_plain, z)
-            if bits.BB
-            else y_bow_plain(z)
-        )
-        y_mid = jnp.broadcast_to(half_beam_midbody(h, z), Xg.shape)
-        y_stern = (
-            lax.cond(z < h.WL * h.HSBOA, y_stern_bulb, y_stern_plain, z)
-            if bits.SB
-            else y_stern_plain(z)
-        )
-
-        y = jnp.where(
-            Xg <= delta_bow(h, z),
-            y_bow,
-            jnp.where(Xg < delta_stern(h, z), y_mid, y_stern),
-        )
-        cols.append(jnp.where((Xg > x_bow[i]) & (Xg < x_stern[i]), y, 0.0))
-
-    return Xg - Xg[0], Z - Z[-1], jnp.stack(cols, axis=1), WLlen
+    Y = offsets(x, bits, Xg, Z)
+    return Xg - Xg[0], Z - Z[-1], Y, WLlen
 
 
-def universal_volume_properties(
+def grid_volume_properties(
     x,
     bits: Bits,
     num_wl: int = 51,
@@ -545,7 +571,7 @@ def universal_volume_properties(
 ):
     """Hydrostatics from the plan-free grid, using the same trapezoidal
     formulas as :func:`shipd_jax.volume_properties` (which requires a plan)."""
-    pc = universal_pointcloud(x, bits, num_wl, ppw, bow_frac, stern_frac)
+    pc = pointcloud(x, bits, num_wl, ppw, bow_frac, stern_frac)
     return _vol_props_from_pc(x, bits, pc)
 
 
