@@ -28,10 +28,10 @@ Typical use::
     g = jax.grad(cw)(x_np)
 
 For an optimization loop, where the design vector moves and the frozen plan
-above goes stale, use the plan-free ``universal_pc_for_cw`` /
-``universal_volume_properties`` instead (see ``universal_full.py`` and the
+above goes stale, use the plan-free ``michell_grid`` /
+``grid_volume_properties`` instead (see ``grid.py`` and the
 "Optimizer readiness" section of docs/shipd.md) -- one compiled function covers
-every design (and, for ``universal_pc_for_cw``, every draft) with no
+every design (and, for ``michell_grid``, every draft) with no
 recompilation, which is what the ship-mdo CSDL resistance model
 (``ship_mdo.models.shipd_resistance``) uses.
 """
@@ -58,11 +58,13 @@ from .hull import (
 )
 from .michell import calc_cf, calc_drag, interp_cw, michspace, mod_michell
 from .stl_export import gen_stl, gen_stl_trivec
-from .universal_full import (
+from .grid import (
+    grid_volume_properties,
+    michell_grid,
+    offsets,
+    pointcloud,
     section_counts,
-    universal_pc_for_cw,
-    universal_pointcloud,
-    universal_volume_properties,
+    waterline_extent,
 )
 
 # The 12 sample hulls of the Ship-D paper (Table 1), one 45-entry design
@@ -93,9 +95,11 @@ __all__ = [
     "mod_michell",
     "section_counts",
     "stern_profile",
-    "universal_pc_for_cw",
-    "universal_pointcloud",
-    "universal_volume_properties",
+    "grid_volume_properties",
+    "michell_grid",
+    "offsets",
+    "pointcloud",
+    "waterline_extent",
     "viz",
     "volume_properties",
 ]
