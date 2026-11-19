@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-Numerical validation of shipd_jax against the original HullParameterization.
+Numerical validation of shipd_jax (JAX) against the original
+HullParameterization (shipd_jax.reference, Cython).
 
 Compares, per hull:
   * the 49 feasibility constraints,
@@ -12,46 +12,45 @@ Compares, per hull:
 and finally checks JAX gradients against central finite differences of the
 JAX forward (fixed plan/topology).
 
-Run from the repo root:
-    python -m shipd_jax.validate_vs_reference [--n30k 20] [--full-res]
+Run:
+    python tools/validate_vs_reference.py [--n30k 20] [--full-res]
+
+--n30k reads InputVectors_30k.npy (the ShipD dataset's design
+vectors, not committed) and is skipped when that file is absent.
 """
+
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import io
-import os
-import sys
 import time
 from contextlib import redirect_stdout
-
-import numpy as np
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_ROOT = os.path.dirname(_HERE)
-sys.path.insert(0, _ROOT)
-
-from shipd_jax import (bits_from_vector, build_volume_plan, build_cw_plan,
-                       gen_pointcloud, volume_properties, gen_pc_for_cw,
-                       mod_michell, constraints)
-
-# ---------------------------------------------------------------------------
-# Load the reference implementation
-# ---------------------------------------------------------------------------
 import matplotlib
+import numpy as np
+
+from shipd_jax import (
+    SAMPLE_HULLS,
+    bits_from_vector,
+    build_cw_plan,
+    build_volume_plan,
+    constraints,
+    gen_pc_for_cw,
+    gen_pointcloud,
+    mod_michell,
+    volume_properties,
+)
+from shipd_jax.reference import modified_michell_cw as MWCw
+from shipd_jax.reference.hull_parameterization import (
+    Hull_Parameterization as HP,
+)
+
 matplotlib.use("Agg")
 
-_ref_path = os.path.join(_ROOT, "spring_26_rewrite", "HullParameterization.py")
-spec = importlib.util.spec_from_file_location("HullParameterization_ref", _ref_path)
-_ref = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(_ref)
-HP = _ref.Hull_Parameterization
-
-sys.path.insert(0, _ROOT)
-import ModifiedMichellCw as MWCw  # noqa: E402
+_ROOT = Path(__file__).resolve().parent.parent / "data" / "shipd"
 
 
 def relerr(a, b, floor=1e-12):
@@ -62,30 +61,39 @@ def relerr(a, b, floor=1e-12):
 
 
 def maxabs(a, b):
-    return np.max(np.abs(np.asarray(a, dtype=np.float64) - np.asarray(b, dtype=np.float64)))
+    return np.max(
+        np.abs(np.asarray(a, dtype=np.float64) - np.asarray(b, dtype=np.float64))
+    )
 
 
-def compare_hull(vec, num_wl=51, ppw=300, cw_drafts=(0.25, 0.33, 0.5, 0.67),
-                 cw_fns=(0.15, 0.3, 0.45), cw_num_wl=51, cw_ppw=301,
-                 verbose=False):
+def compare_hull(
+    vec,
+    num_wl=51,
+    ppw=300,
+    cw_drafts=(0.25, 0.33, 0.5, 0.67),
+    cw_fns=(0.15, 0.3, 0.45),
+    cw_num_wl=51,
+    cw_ppw=301,
+    verbose=False,
+):
     """Return dict of max abs/rel errors for one hull."""
     out = {}
     bits = bits_from_vector(vec)
 
     ref = HP(np.array(vec, dtype=np.float64))
 
-    # ---- constraints ----
+    # constraints
     c_ref = np.asarray(ref.input_Constraints(), dtype=np.float64)
     c_jax = np.asarray(constraints(jnp.asarray(vec), bits))
     out["constraints_maxabs"] = maxabs(c_ref, c_jax)
 
-    # ---- point cloud + volume properties ----
+    # point cloud + volume properties
     try:
         with redirect_stdout(io.StringIO()):
             ref.Calc_VolumeProperties(NUM_WL=num_wl, PointsPerWL=ppw)
         pc_ref = np.asarray(ref.PCMeasurement, dtype=np.float64)
         ref_vol_ok = True
-    except Exception:  # noqa: BLE001  (the reference can crash on some hulls)
+    except Exception:  # the reference can crash on some hulls
         ref_vol_ok = False
 
     if ref_vol_ok:
@@ -104,12 +112,21 @@ def compare_hull(vec, num_wl=51, ppw=300, cw_drafts=(0.25, 0.33, 0.5, 0.67),
         out["wsa_rel"] = relerr(ref.Area_WS, props["area_ws"])
         out["wll_rel"] = relerr(ref.WL_Lengths, props["wl_lengths"])
     else:
-        for k in ("pointcloud_maxabs", "areas_wp_rel", "volumes_rel",
-                  "lcf_rel", "lcb_rel", "vcb_rel", "ixx_rel", "iyy_rel",
-                  "wsa_rel", "wll_rel"):
-            out[k] = np.nan   # reference itself crashed; nothing to compare
+        for k in (
+            "pointcloud_maxabs",
+            "areas_wp_rel",
+            "volumes_rel",
+            "lcf_rel",
+            "lcb_rel",
+            "vcb_rel",
+            "ixx_rel",
+            "iyy_rel",
+            "wsa_rel",
+            "wll_rel",
+        ):
+            out[k] = np.nan  # reference itself crashed; nothing to compare
 
-    # ---- Michell wave resistance ----
+    # Michell wave resistance
     g = 9.81
     rho = 1000.0
     worst_pc = 0.0
@@ -117,17 +134,18 @@ def compare_hull(vec, num_wl=51, ppw=300, cw_drafts=(0.25, 0.33, 0.5, 0.67),
     cw_ok = True
     for tfrac in cw_drafts:
         try:
-            Xr, Zr, Yr, WLr = ref.gen_PC_for_Cw(ref.Dd * tfrac,
-                                                NUM_WL=cw_num_wl,
-                                                PointsPerWL=cw_ppw)
-        except Exception:  # noqa: BLE001
+            Xr, Zr, Yr, WLr = ref.gen_PC_for_Cw(
+                ref.Dd * tfrac, NUM_WL=cw_num_wl, PointsPerWL=cw_ppw
+            )
+        except Exception:
             cw_ok = False
             continue
         cw_plan = build_cw_plan(vec, tfrac, num_wl=cw_num_wl, ppw=cw_ppw)
         Xj, Zj, Yj, WLj = gen_pc_for_cw(jnp.asarray(vec), cw_plan)
 
-        worst_pc = max(worst_pc, maxabs(Xr, Xj), maxabs(Zr, Zj),
-                       maxabs(Yr, Yj), maxabs(WLr, WLj))
+        worst_pc = max(
+            worst_pc, maxabs(Xr, Xj), maxabs(Zr, Zj), maxabs(Yr, Yj), maxabs(WLr, WLj)
+        )
 
         for fn in cw_fns:
             U = fn * np.sqrt(g * WLr)
@@ -144,17 +162,18 @@ def compare_hull(vec, num_wl=51, ppw=300, cw_drafts=(0.25, 0.33, 0.5, 0.67),
     return out
 
 
-# ---------------------------------------------------------------------------
 # Gradient checks (JAX AD vs central finite differences on the JAX forward)
-# ---------------------------------------------------------------------------
+
 
 def _fd_grad(f, x, eps_rel=1e-6):
     x = np.array(x, dtype=np.float64)
     g = np.zeros_like(x)
     for i in range(len(x)):
         e = eps_rel * max(1.0, abs(x[i]))
-        xp = x.copy(); xp[i] += e
-        xm = x.copy(); xm[i] -= e
+        xp = x.copy()
+        xp[i] += e
+        xm = x.copy()
+        xm[i] -= e
         g[i] = (float(f(jnp.asarray(xp))) - float(f(jnp.asarray(xm)))) / (2 * e)
     return g
 
@@ -195,9 +214,13 @@ def gradient_checks(vec, num_wl=21, ppw=101, verbose=True):
         pc = gen_pointcloud(x, plan)
         return pc[num_wl // 2, ppw // 3, 0] + pc[num_wl // 2, ppw // 3, 1]
 
-    for name, f in [("volume", vol_total), ("wetted_surface", wsa_total),
-                    ("michell_rw", cw_val), ("constraints_tanh_sum", cons_sum),
-                    ("surface_point", surf_pt)]:
+    for name, f in [
+        ("volume", vol_total),
+        ("wetted_surface", wsa_total),
+        ("michell_rw", cw_val),
+        ("constraints_tanh_sum", cons_sum),
+        ("surface_point", surf_pt),
+    ]:
         f = jax.jit(f)
         g_ad = np.asarray(jax.jit(jax.grad(f))(x0))
         g_fd = _fd_grad(f, vec)
@@ -211,20 +234,26 @@ def gradient_checks(vec, num_wl=21, ppw=101, verbose=True):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--n30k", type=int, default=20,
-                    help="number of hulls from InputVectors_30k.npy to test")
-    ap.add_argument("--full-res", action="store_true",
-                    help="also run one hull at dataset resolution (101x1000)")
+    ap.add_argument(
+        "--n30k",
+        type=int,
+        default=20,
+        help="number of hulls from InputVectors_30k.npy to test",
+    )
+    ap.add_argument(
+        "--full-res",
+        action="store_true",
+        help="also run one hull at dataset resolution (101x1000)",
+    )
     ap.add_argument("--skip-grad", action="store_true")
     args = ap.parse_args()
 
-    csv = np.loadtxt(os.path.join(_ROOT, "Input_Vectors_SampleHulls.csv"),
-                     delimiter=",", dtype=np.float64)
+    csv = np.loadtxt(SAMPLE_HULLS, delimiter=",", dtype=np.float64)
     vecs = [csv[i] for i in range(csv.shape[0])]
     labels = [f"csv[{i}]" for i in range(csv.shape[0])]
 
-    npy_path = os.path.join(_ROOT, "InputVectors_30k.npy")
-    if args.n30k > 0 and os.path.exists(npy_path):
+    npy_path = _ROOT / "InputVectors_30k.npy"
+    if args.n30k > 0 and npy_path.exists():
         big = np.load(npy_path)
         idx = np.linspace(0, len(big) - 1, args.n30k, dtype=int)
         vecs += [big[i] for i in idx]
@@ -233,10 +262,10 @@ def main():
     keys = None
     worst = {}
     t0 = time.time()
-    for lab, v in zip(labels, vecs):
+    for lab, v in zip(labels, vecs, strict=True):
         try:
             out = compare_hull(v)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             print(f"{lab:10s} FAILED: {type(e).__name__}: {e}")
             continue
         if keys is None:
@@ -250,18 +279,24 @@ def main():
     print("-" * 100)
     if keys:
         print("WORST      " + "  ".join(f"{worst[k]:14.3e}" for k in keys))
-    print(f"[{time.time()-t0:.1f}s]")
+    print(f"[{time.time() - t0:.1f}s]")
 
     if args.full_res:
         print("\nFull dataset resolution (101x1000), hull csv[0]:")
-        out = compare_hull(vecs[0], num_wl=101, ppw=1000, verbose=True,
-                           cw_drafts=(0.33,), cw_fns=(0.3,))
+        out = compare_hull(
+            vecs[0],
+            num_wl=101,
+            ppw=1000,
+            verbose=True,
+            cw_drafts=(0.33,),
+            cw_fns=(0.3,),
+        )
 
     if not args.skip_grad:
         print("\nGradient checks (hull csv[0]):")
         gradient_checks(vecs[0])
         # also on a hull without bulbs for branch coverage
-        for lab, v in zip(labels, vecs):
+        for lab, v in zip(labels, vecs, strict=True):
             b = bits_from_vector(v)
             if not b.BB and not b.SB:
                 print(f"\nGradient checks ({lab}, no bulbs):")

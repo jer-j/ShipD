@@ -1,4 +1,8 @@
-# shipd_jax — differentiable Ship-D in JAX
+# Differentiable Ship-D in JAX (`shipd_jax`)
+
+This package started as the standalone `shipd_jax`; that name still appears
+below for the JAX port as opposed to the original implementation, which is
+kept, compiled with Cython, in `shipd_jax.reference`.
 
 A JAX re-implementation of the Ship-D hull parameterization
 (`HullParameterization.py`, Bagazinski & Ahmed 2023) in which the **hull
@@ -9,7 +13,7 @@ original NumPy implementation.
 
 Validated agreement with the reference (12 sample hulls + 25 hulls spanning
 the 30k dataset + one run at full dataset resolution, 101x1000; worst case
-across all hulls — see `validation_report.txt`):
+across all hulls — rerun `tools/validate_vs_reference.py` to reproduce):
 
 | quantity                                   | worst-case difference |
 |--------------------------------------------|-----------------------|
@@ -59,11 +63,12 @@ at the evaluation point and its gradient is the implicit-function derivative.
 
 ```python
 import numpy as np, jax, jax.numpy as jnp
+from shipd_jax import SAMPLE_HULLS
 from shipd_jax import (bits_from_vector, constraints,
-                       build_volume_plan, gen_pointcloud, volume_properties,
-                       build_cw_plan, gen_pc_for_cw, mod_michell, calc_cf)
+                                     build_volume_plan, gen_pointcloud, volume_properties,
+                                     build_cw_plan, gen_pc_for_cw, mod_michell, calc_cf)
 
-x = np.loadtxt('Input_Vectors_SampleHulls.csv', delimiter=',')[0]
+x = np.loadtxt(SAMPLE_HULLS, delimiter=',')[0]
 bits = bits_from_vector(x)          # static 0/1 switches (EP_S, EP_T, BB, SB)
 
 # ---- constraints (feasible: all <= 0) and their jacobian ----
@@ -113,14 +118,21 @@ surface is `gen_pointcloud` / `gen_pc_for_cw`.
 ## Validation
 
 ```bash
-python -m shipd_jax.validate_vs_reference            # sample + 20 hulls of the 30k set
-python -m shipd_jax.validate_vs_reference --full-res # adds a 101x1000 dataset-resolution check
-python -m shipd_jax.test_stl_parity                  # STL mesh comparison
+python tools/validate_vs_reference.py            # sample + 20 hulls of the 30k set
+python tools/validate_vs_reference.py --full-res # adds a 101x1000 dataset-resolution check
+pytest tests/test_stl_parity.py                  # STL mesh comparison
 ```
 
 The validator compares every quantity against the original implementation
-(loaded from `spring_26_rewrite/HullParameterization.py`) and checks JAX
-gradients against central finite differences of the JAX forward.
+(`shipd_jax.reference`) and checks JAX gradients against central
+finite differences of the JAX forward. The 30k-hull check reads
+`InputVectors_30k.npy` (the ShipD dataset, not committed) and is
+skipped without it.
+
+The numbers above were produced against a pure-Python copy of the original
+(`spring_26_rewrite/HullParameterization.py`, not in this repository). The
+compiled reference must be built with Cython's `wraparound` left on (see
+`setup.py`): the code indexes from the end of arrays.
 
 ## Faithfully reproduced quirks
 
@@ -147,7 +159,7 @@ stern-bulb fillet system is singular (`csv[8]` in the sample vectors) crash
 the original `gen_waterline_stern_SB`; here they produce non-finite values
 instead of raising.
 
-## Optimizer readiness: the plan-free pipeline (`shipd_jax.universal`)
+## Optimizer readiness: the plan-free pipeline (`shipd_jax.universal_full`)
 
 The reference-exact pipeline freezes discrete mesh topology (per-waterline
 integer point counts, curve-family flags, bulb-fillet root initializers) into
@@ -156,68 +168,44 @@ plan is baked into the JIT'd executable — and it goes stale almost immediately
 as an optimizer moves (measured: 7/41 waterlines wrong at ‖Δx‖≈0.0015,
 all 41 by ‖Δx‖≈0.015). Rebuilding it forces a 30–170 s XLA recompile.
 
-`shipd_jax.universal` removes the dependency for **bulb-free** hulls with
-`bit_EP_S == bit_EP_T`:
+`shipd_jax.universal_full` removes the dependency for **every** hull type
+(supersedes an earlier bulb-free-only version, `shipd_jax.universal`, which
+handled only `bit_EP_S == bit_EP_T` and has since been removed):
 
-* `uniform_volume_plan(bits, num_wl, ppw)` — point counts are fixed fractions
-  of `ppw`, valid for any such design vector. Sample *locations* still adapt
-  continuously; only the *counts* are frozen.
-* `gen_pc_for_cw_universal(x, draft_frac, bits, ...)` — the offset-grid mask
+* `section_counts(ppw, bow_frac, stern_frac)` — point counts are fixed
+  fractions of `ppw`, valid for any design vector. Sample *locations* still
+  adapt continuously; only the *counts* are frozen.
+* `universal_pc_for_cw(x, draft_frac, bits, ...)` — the offset-grid mask
   becomes a traced `jnp.where`, and **the draft is a traced argument**, so one
   compile covers every (design, draft) pair and `dCw/d(draft)` exists.
+* `universal_pointcloud(x, bits, ...)` / `universal_volume_properties(x, bits, ...)`
+  — the plan-free hull surface and hydrostatics, used by
+  `ship_mdo.models.shipd_resistance.ShipDResistanceJAX`, the CSDL bridge in
+  [ship-mdo](https://github.com/jer-j/ship-mdo) that its optimization notebooks run.
 
-Validated: the Michell offset grid is **bit-identical** to the reference
-(0.0e+00, so no wave-drag penalty); hydrostatics differ only by sample
-placement and converge with resolution (4.7e-5 at 21×101 → 4.5e-6 at 51×300);
-`dCw/d(draft)` matches finite differences to 2e-8; and design gradients stay
-correct **at points where the frozen plan would be stale** (5.4e-7 vs FD).
-Forty fresh (design, draft) evaluations run through one compiled function in
-0.07 s total.
+The key realization over the bulb-free-only version: the reference plan
+freezes two *different* kinds of thing, and only array **shapes** genuinely
+have to be static. "Is the bulb present at this waterline?", "ellipse or
+parabola?", "which fillet-cubic root?" etc. are *value* decisions expressible
+with `jax.lax.cond`/`jnp.where` from the traced design vector — `lax.cond`
+specifically (not `where`) for the bulb branches, since the untaken branch
+would otherwise evaluate bulb geometry outside its valid domain and poison
+the gradient with NaN even though `where` selects the right forward value.
+One compiled executable then serves every design vector per `Bits` setting
+(at most 16 variants, structural switches rather than design variables), with
+branch decisions moving *with* the design instead of being frozen at plan-build
+time — so gradients stay correct arbitrarily far from the point the topology
+was chosen at.
 
-Also provided, for auditing the frozen-plan route:
-`plan_signature`, `topology_safe_bounds` (per-axis bisection for the largest
-topology-preserving perturbation) and `check_box_topology` (is the box
-*interior* actually safe? — generally not).
-
-### All hulls, including bulbs (`shipd_jax.universal_full`)
-
-`universal.py` above covers bulb-free hulls only. `universal_full.py` removes
-that restriction. The insight is that the plan freezes two different kinds of
-thing and **only the array shapes have to be static**:
-
-| plan entry | what it is | must be static? |
-|---|---|---|
-| `pts_bow/mid/stern` | array **shapes** | yes |
-| `bb` / `sb` | is the bulb present at this waterline? | no |
-| `is_ellipse` | ellipse or parabola at this height? | no |
-| `sb_branch_a` | which stern-fillet branch? | no |
-| `bb_x0` | which root of the fillet cubic? | no |
-
-Fix the shapes with a global scalar and every remaining flag becomes a *value*
-decision that `lax.cond` / `jnp.where` evaluates from the traced design vector —
-including the flags that depend on *combinations* of variables, which is exactly
-where per-axis bounds on the frozen plan break down. `cubic_root_real_parts`
-replaces the frozen `np.roots` initializer with a closed-form differentiable
-solver (matches `np.roots` to ~3e-9 over 4000 random cubics, including the
-complex-pair real-part convention the reference relies on).
-
-Validated across all twelve sample hulls: the Michell offset grid matches the
-reference to **~1e-13 or exactly** (bulbed hulls included, so no wave-drag
-penalty); hydrostatics differ only by sample placement (~0.1 % LOA mean surface
-distance); **45/45 finite gradients** on every bulbed hull with AD-vs-FD ~1e-6,
-including bulb parameters that previously could not be varied at all.
-
-`lax.cond` is used for the per-waterline bulb branch and the double-where
-pattern for elementwise math — the two are not interchangeable. `lax.cond`
-evaluates only the taken branch and so avoids NaN gradients from an invalid
-untaken branch; `jnp.where` always evaluates both and does not.
-
-**One deliberate departure:** `hull.py` reproduces the original's double-count
-of a Cw station that lands exactly on `delta_bow(z)`; `universal_full.py` does
-not (it masks each station once). This only matters for hulls whose `delta_bow`
-is constant in z — the Wigley hull here, where the grids differ by ~1.6e-2
-(99 non-zero stations vs the reference's 100). Use `gen_pc_for_cw` if you need
-to reproduce the published dataset numbers exactly.
+Validated (bulb-free case, against the reference plan): the Michell offset
+grid is **bit-identical** (0.0e+00, so no wave-drag penalty); hydrostatics
+differ only by sample placement and converge with resolution (4.7e-5 at
+21×101 → 4.5e-6 at 51×300); `dCw/d(draft)` matches finite differences to
+2e-8; and design gradients stay correct **at points where the frozen plan
+would be stale** (5.4e-7 vs FD). Also separately validated bit-identical
+(~1e-14) against the reference for a **bulbous** hull, including at points
+far outside the baseline used to build the reference plan (see
+`examples/ShipD_JAX_Universal_Validation.ipynb`).
 
 `shipd_jax.iges128` is a small reader for IGES entity-128 rational B-spline
 surfaces, used to compare against published hull geometry (e.g. the SIMMAN
@@ -225,9 +213,9 @@ surfaces, used to compare against published hull geometry (e.g. the SIMMAN
 
 ## Visualization (`shipd_jax.viz`)
 
-Every plot in the analysis notebook is a call into `shipd_jax.viz` (also
-available as `shipd_jax.viz` after `import shipd_jax`), so any of it is
-reusable outside the notebook. Four families of functions:
+Every plot in the analysis notebook is a call into `shipd_jax.viz`
+(also available as `viz` after `import shipd_jax`), so any of
+it is reusable outside the notebook. Four families of functions:
 
 * **Resistance curves**: `plot_michell_validation`, `plot_resistance_vs_froude`
   (Figure-7-style multi-draft curve + tank data + reference overlay),
@@ -261,7 +249,7 @@ reusable outside the notebook. Four families of functions:
 
 ## Analysis notebook
 
-`ShipD_JAX_Analysis.ipynb` reproduces Figures 6 and 7 of the Ship-D paper
+`examples/ShipD_JAX_Analysis.ipynb` reproduces Figures 6 and 7 of the Ship-D paper
 (Wigley Michell validation — essentially exact; DTMB 5415 vs. towing tank),
 and demonstrates the differentiable pipeline end to end: `dCw/dFn` via
 `value_and_grad`, resistance/constraint Jacobians and exact-autodiff **KKT
@@ -271,27 +259,34 @@ the original implementation to ~1e-13 % of LOA), **traditional lines drawings
 and body plans**, and **surface-sensitivity fields for any design variable,
 for resistance ($R_w$/$C_w$), or for any constraint** — the last two sharing a
 single compiled surface-JVP kernel reused across every direction examined.
-`paper_data/` holds the extracted paper figures and their digitized curves.
+`data/paper_data/` holds the extracted paper figures and their digitized curves.
 The Michell y-axis convention used by the paper (recovered by matching the
 analytic Wigley curve) is `Cw = Rw / (rho U^2 L^2)` — no factor 1/2.
 
 ## Files
 
+Library modules are in `shipd_jax/`, notebooks in `examples/`, scripts in
+`tools/`, tests in `tests/`. The original `HullParameterization.py` and
+`ModifiedMichellCw.py` at the repository root are upstream's, untouched;
+`shipd_jax/reference/` holds the Cython-compiled copies the port is checked
+against (`hull_parameterization.pyx` differs from `HullParameterization.py`
+only by one commented-out debug `print`).
+
 | file | contents |
 |---|---|
 | `hull.py` | parameter parsing, all sectional geometry, fillets, plans, point clouds, hydrostatics |
-| `universal.py` | plan-free (recompile-free) pipeline for bulb-free hulls; topology-safe bounds tooling |
-| `universal_full.py` | plan-free pipeline for **all** hulls incl. bulbs, via `lax.cond` + closed-form traced cubic roots |
+| `universal_full.py` | plan-free (recompile-free) pipeline for **every** hull type; supersedes the removed bulb-free-only `universal.py` |
 | `viz.py` | reusable visualizations: resistance curves, gradient/Jacobian/KKT diagnostics, 3D rendering, lines drawings, shape sensitivity |
 | `iges128.py` | minimal IGES entity-128 NURBS reader (for comparing against published geometry) |
 | `ShipD_JAX_Analysis.ipynb` | paper reproduction + differentiability showcase (see above) |
-| `ShipD_JAX_Optimizer_Readiness.ipynb` | recompilation study (bounds / `lax.cond` / plan-free rewrite), sensitivity validation, Fig. 7 draft reverse-engineering, Chamfer audit vs. the official SIMMAN 5415 |
-| `ShipD_JAX_Universal_Validation.ipynb` | validation of the all-hull plan-free pipeline (incl. bulbs), `lax.cond`-vs-`jnp.where` NaN experiment, bulb sensitivity study, and the DTMB 5415 sonar-dome parameterization limit |
+| `ShipD_JAX_Optimizer_Readiness.ipynb` | recompilation study (bounds / `lax.cond` / plan-free rewrite), sensitivity validation, Fig. 7 draft reverse-engineering, Chamfer audit vs. the official SIMMAN 5415 -- historical: some cells exercise the now-removed `universal.py`, kept for their recorded results/rationale rather than re-run |
+| `ShipD_JAX_Universal_Validation.ipynb` | validates `universal_full.py` (bulb-free and bulbous cases) bit-identical against the reference plan pipeline |
 | `constraints.py` | the 49 feasibility constraints |
 | `michell.py` | vectorized Michell integral, ITTC friction line, drag/interp helpers |
 | `stl_export.py` | reference-exact STL mesh generation (concrete) |
-| `validate_vs_reference.py` | numerical comparison + gradient checks |
-| `test_stl_parity.py` | STL mesh comparison |
+| `reference/` | the original implementation (Cython), the reference the above is checked against |
+| `tools/validate_vs_reference.py` | numerical comparison + gradient checks |
+| `tests/test_stl_parity.py` | STL mesh comparison |
 
 Requires `jax` (x64 enabled at import), `numpy`. Tested with jax 0.4.38 /
 numpy 1.26.4 in the `mdo_env` conda environment.

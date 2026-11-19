@@ -1,0 +1,55 @@
+[project]
+name = "shipd-jax"
+version = "0.1.0"
+description = "Differentiable (JAX) port of the Ship-D hull parameterization, constraints, hydrostatics and Michell wave resistance."
+authors = [
+    { name = "Jeremy John", email = "jjeremy@vt.edu" },
+]
+readme = "docs/shipd_jax.md"
+requires-python = ">=3.10"
+dependencies = [
+    "jax",
+    "matplotlib",
+    # np.trapezoid
+    "numpy>=2.0",
+    # imported at module level by the reference ShipD (hull_parameterization)
+    "numpy-stl",
+    # iges128 (B-spline evaluation)
+    "scipy",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/jer-j/ShipD"
+Upstream = "https://github.com/noahbagz/ShipD"
+
+[tool.setuptools.packages.find]
+include = ["shipd_jax*"]
+
+[tool.setuptools.package-data]
+shipd_jax = ["data/*.csv"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+# upstream Ship-D files at the repository root are kept as published
+extend-exclude = [
+    "HullParameterization.py",
+    "ModifiedMichellCw.py",
+    "Gaussian_Curvature.py",
+    "MaxBox.py",
+    "STLGen.py",
+    "*.ipynb",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["shipd_jax"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel", "Cython>=0.29.0", "numpy"]
+build-backend = "setuptools.build_meta"

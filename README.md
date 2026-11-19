@@ -131,3 +131,22 @@ Bagazinski, Noah J., and Faez Ahmed. "Ship-D: Ship Hull Dataset for Design Optim
   year={2023},
   organization={American Society of Mechanical Engineers}
 }
+
+## Differentiable JAX port (`shipd_jax`, this fork)
+
+This fork adds `shipd_jax`, a JAX re-implementation of the hull
+parameterization above in which the hull surface, the 49 feasibility
+constraints, the hydrostatics and the Michell wave resistance are
+differentiable with respect to the 45-entry design vector, while matching the
+original to floating-point accuracy. The original files in this directory are
+unchanged; `shipd_jax/reference/` holds the Cython-compiled copies the port is
+validated against.
+
+```
+pip install -e .          # builds the Cython reference
+pytest                    # STL parity against the reference
+python tools/validate_vs_reference.py
+```
+
+See [docs/shipd_jax.md](docs/shipd_jax.md) for usage, validation results and
+the notebooks in `examples/`.

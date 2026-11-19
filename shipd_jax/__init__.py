@@ -1,13 +1,13 @@
-"""shipd_jax: differentiable (JAX) implementation of the Ship-D hull pipeline.
+"""Differentiable (JAX) implementation of the Ship-D hull pipeline.
 
 Typical use::
 
     import numpy as np, jax
-    from shipd_jax import (bits_from_vector, build_volume_plan, build_cw_plan,
-                           gen_pointcloud, volume_properties, gen_pc_for_cw,
-                           mod_michell, constraints)
+    from shipd_jax import (SAMPLE_HULLS, bits_from_vector, build_volume_plan,
+                           build_cw_plan, gen_pointcloud, volume_properties,
+                           gen_pc_for_cw, mod_michell, constraints)
 
-    x_np = np.loadtxt('Input_Vectors_SampleHulls.csv', delimiter=',')[0]
+    x_np = np.loadtxt(SAMPLE_HULLS, delimiter=',')[0]
     bits = bits_from_vector(x_np)
 
     # constraints and their jacobian
@@ -26,28 +26,76 @@ Typical use::
         U = Fn * jnp.sqrt(9.81 * WL)
         return mod_michell(Y, U, X, Z, rho=1000.0, N=21)
     g = jax.grad(cw)(x_np)
+
+For an optimization loop, where the design vector moves and the frozen plan
+above goes stale, use the plan-free ``universal_pc_for_cw`` /
+``universal_volume_properties`` instead (see ``universal_full.py`` and the
+"Optimizer readiness" section of docs/shipd.md) -- one compiled function covers
+every design (and, for ``universal_pc_for_cw``, every draft) with no
+recompilation, which is what the ship-mdo CSDL resistance model
+(``ship_mdo.models.shipd_resistance``) uses.
 """
-from .hull import (Bits, Hull, bits_from_vector, build_hull,
-                   build_volume_plan, build_cw_plan,
-                   gen_pointcloud, volume_properties, gen_pc_for_cw,
-                   half_beam_midbody, bow_profile, stern_profile,
-                   delta_bow, delta_stern)
-from .constraints import constraints
-from .michell import mod_michell, michspace, calc_cf, calc_drag, interp_cw
-from .stl_export import gen_stl, gen_stl_trivec
-from .universal import (uniform_volume_plan, gen_pc_for_cw_universal,
-                        plan_signature, topology_safe_bounds,
-                        check_box_topology)
+
+from importlib.resources import files as _files
+
 from . import viz
+from .constraints import constraints
+from .hull import (
+    Bits,
+    Hull,
+    bits_from_vector,
+    bow_profile,
+    build_cw_plan,
+    build_hull,
+    build_volume_plan,
+    delta_bow,
+    delta_stern,
+    gen_pc_for_cw,
+    gen_pointcloud,
+    half_beam_midbody,
+    stern_profile,
+    volume_properties,
+)
+from .michell import calc_cf, calc_drag, interp_cw, michspace, mod_michell
+from .stl_export import gen_stl, gen_stl_trivec
+from .universal_full import (
+    section_counts,
+    universal_pc_for_cw,
+    universal_pointcloud,
+    universal_volume_properties,
+)
+
+# The 12 sample hulls of the Ship-D paper (Table 1), one 45-entry design
+# vector per row; shipped with the package so a non-editable install has it.
+SAMPLE_HULLS = _files(__name__).joinpath("data", "Input_Vectors_SampleHulls.csv")
 
 __all__ = [
-    "Bits", "Hull", "bits_from_vector", "build_hull",
-    "build_volume_plan", "build_cw_plan",
-    "gen_pointcloud", "volume_properties", "gen_pc_for_cw",
-    "half_beam_midbody", "bow_profile", "stern_profile",
-    "delta_bow", "delta_stern",
-    "constraints", "mod_michell", "michspace", "calc_cf", "calc_drag",
-    "interp_cw", "gen_stl", "gen_stl_trivec", "viz",
-    "uniform_volume_plan", "gen_pc_for_cw_universal", "plan_signature",
-    "topology_safe_bounds", "check_box_topology",
+    "SAMPLE_HULLS",
+    "Bits",
+    "Hull",
+    "bits_from_vector",
+    "bow_profile",
+    "build_cw_plan",
+    "build_hull",
+    "build_volume_plan",
+    "calc_cf",
+    "calc_drag",
+    "constraints",
+    "delta_bow",
+    "delta_stern",
+    "gen_pc_for_cw",
+    "gen_pointcloud",
+    "gen_stl",
+    "gen_stl_trivec",
+    "half_beam_midbody",
+    "interp_cw",
+    "michspace",
+    "mod_michell",
+    "section_counts",
+    "stern_profile",
+    "universal_pc_for_cw",
+    "universal_pointcloud",
+    "universal_volume_properties",
+    "viz",
+    "volume_properties",
 ]

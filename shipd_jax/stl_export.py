@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 STL export replicating ``Hull_Parameterization.gen_stl``.
 
@@ -10,18 +9,40 @@ reference ``gen_stl`` output.  STL writing itself is inherently a
 non-differentiable I/O step; use :func:`gen_stl_trivec` if you want the
 triangle vertex array as a numpy array without writing a file.
 """
+
 from __future__ import annotations
 
-import numpy as np
-import jax.numpy as jnp
+from pathlib import Path
 
-from .hull import (Bits, Hull, bits_from_vector, build_hull, _linspace,
-                   _bb_fillet, _sb_fillet, _bb_root_init, _sb_branch,
-                   _cubic, _quartic,
-                   _stern_curve, solve_waterline_bow, solve_waterline_stern,
-                   half_beam_midbody, half_beam_transom, half_beam_bb,
-                   half_beam_sb, bow_profile, bb_profile, sb_profile,
-                   stern_profile, delta_bow, delta_stern)
+import jax.numpy as jnp
+import numpy as np
+
+from .hull import (
+    Bits,
+    Hull,
+    _bb_fillet,
+    _bb_root_init,
+    _cubic,
+    _linspace,
+    _quartic,
+    _sb_branch,
+    _sb_fillet,
+    _stern_curve,
+    bb_profile,
+    bits_from_vector,
+    bow_profile,
+    build_hull,
+    delta_bow,
+    delta_stern,
+    half_beam_bb,
+    half_beam_midbody,
+    half_beam_sb,
+    half_beam_transom,
+    sb_profile,
+    solve_waterline_bow,
+    solve_waterline_stern,
+    stern_profile,
+)
 
 
 def _wl_grid_points(h: Hull, bits: Bits, X: np.ndarray, z: float) -> np.ndarray:
@@ -41,7 +62,7 @@ def _wl_grid_points(h: Hull, bits: Bits, X: np.ndarray, z: float) -> np.ndarray:
         WL.append([stern_end, 0.0, 0.0])
         return np.array(WL)
 
-    # ---------------- bow section ----------------
+    # bow section
     if bits.BB and z < float(h.WL):
         x1 = float(bb_profile(h, z))
         x2 = float(delta_bow(h, z))
@@ -67,7 +88,7 @@ def _wl_grid_points(h: Hull, bits: Bits, X: np.ndarray, z: float) -> np.ndarray:
         for xi in xs:
             WL.append([float(xi), float(_cubic(prof, xi)), z])
 
-    # ---------------- midbody section ----------------
+    # midbody section
     db = float(delta_bow(h, z))
     ds = float(delta_stern(h, z))
     y_mid = float(half_beam_midbody(h, z))
@@ -75,7 +96,7 @@ def _wl_grid_points(h: Hull, bits: Bits, X: np.ndarray, z: float) -> np.ndarray:
         if db <= xi < ds:
             WL.append([float(xi), y_mid, z])
 
-    # ---------------- stern section ----------------
+    # stern section
     is_ellipse = bool(bits.EP_T if z >= float(h.SK[1]) else bits.EP_S)
     if bits.SB and z < float(h.WL * h.HSBOA):
         x1s = ds
@@ -121,8 +142,14 @@ def gen_meshgrid_pointcloud(x_np, NUM_WL=51, PointsPerLOA=501, Z=None, X=None):
     return [_wl_grid_points(h, bits, X, float(z)) for z in Z], h, bits
 
 
-def gen_stl_trivec(x_np, NUM_WL=50, PointsPerWL=300, bit_AddTransom=1,
-                   bit_AddDeckLid=0, bit_RefineBowAndStern=0):
+def gen_stl_trivec(
+    x_np,
+    NUM_WL=50,
+    PointsPerWL=300,
+    bit_AddTransom=1,
+    bit_AddDeckLid=0,
+    bit_RefineBowAndStern=0,
+):
     """Triangle vertex array ((n,3,3)) replicating ``gen_stl``."""
     x_np = np.asarray(x_np, dtype=np.float64)
     bits = bits_from_vector(x_np)
@@ -138,14 +165,14 @@ def gen_stl_trivec(x_np, NUM_WL=50, PointsPerWL=300, bit_AddTransom=1,
 
     x = np.linspace(-LOA * 0.5, 1.5 * LOA, 2 * PointsPerWL - 1)
     if bit_RefineBowAndStern:
-        x_sub1 = x[0:int(0.75 * PointsPerWL)] + 0.5 * (x[1] - x[0])
-        x_sub2 = x[-int(0.75 * PointsPerWL):] + 0.5 * (x[1] - x[0])
+        x_sub1 = x[0 : int(0.75 * PointsPerWL)] + 0.5 * (x[1] - x[0])
+        x_sub2 = x[-int(0.75 * PointsPerWL) :] + 0.5 * (x[1] - x[0])
         x = np.concatenate((x_sub1, x_sub2, x))
         x = np.sort(x)
 
     pts = [_wl_grid_points(h, bits, x, float(zz)) for zz in z]
 
-    # ---- triangulation (verbatim port of the reference index logic) ----
+    # triangulation (verbatim port of the reference index logic)
     TriVec = []
     for i in range(0, NUM_WL - 1):
         bow = np.argmax([pts[i][0, 0], pts[i + 1][0, 0]])
@@ -175,10 +202,20 @@ def gen_stl_trivec(x_np, NUM_WL=50, PointsPerWL=300, bit_AddTransom=1,
             TriVec.append([pts[i][0], pts[i + 1][idx_WLB1], pts[i][idx_WLB0]])
 
         for j in range(0, idx_WLS1 - idx_WLB1):
-            TriVec.append([pts[i][idx_WLB0 + j], pts[i + 1][idx_WLB1 + j],
-                           pts[i + 1][idx_WLB1 + j + 1]])
-            TriVec.append([pts[i][idx_WLB0 + j], pts[i + 1][idx_WLB1 + j + 1],
-                           pts[i][idx_WLB0 + j + 1]])
+            TriVec.append(
+                [
+                    pts[i][idx_WLB0 + j],
+                    pts[i + 1][idx_WLB1 + j],
+                    pts[i + 1][idx_WLB1 + j + 1],
+                ]
+            )
+            TriVec.append(
+                [
+                    pts[i][idx_WLB0 + j],
+                    pts[i + 1][idx_WLB1 + j + 1],
+                    pts[i][idx_WLB0 + j + 1],
+                ]
+            )
 
         if stern:
             for j in range(idx_WLS0, len(pts[i]) - 1):
@@ -190,7 +227,6 @@ def gen_stl_trivec(x_np, NUM_WL=50, PointsPerWL=300, bit_AddTransom=1,
                 TriVec.append([pts[i][-1], pts[i + 1][j], pts[i + 1][j + 1]])
 
     TriVec = np.array(TriVec)
-    hullTriangles = 2 * len(TriVec)
 
     vectors = [TriVec]
     TriVec_stbd = np.copy(TriVec[:, ::-1])
@@ -240,24 +276,33 @@ def write_stl_binary(trivec: np.ndarray, path: str, name: bytes = b"shipd_jax"):
     lens = np.linalg.norm(normals, axis=1, keepdims=True)
     normals = np.where(lens > 0, normals / np.where(lens == 0, 1, lens), 0.0)
 
-    rec = np.zeros(n, dtype=[("n", "<f4", 3), ("v", "<f4", (3, 3)),
-                             ("attr", "<u2")])
+    rec = np.zeros(n, dtype=[("n", "<f4", 3), ("v", "<f4", (3, 3)), ("attr", "<u2")])
     rec["n"] = normals.astype(np.float32)
     rec["v"] = tri.astype(np.float32)
-    with open(path, "wb") as fh:
+    with Path(path).open("wb") as fh:
         header = name[:80].ljust(80, b"\0")
         fh.write(header)
         fh.write(np.uint32(n).tobytes())
         fh.write(rec.tobytes())
 
 
-def gen_stl(x_np, NUM_WL=50, PointsPerWL=300, bit_AddTransom=1,
-            bit_AddDeckLid=0, bit_RefineBowAndStern=0,
-            namepath="Hull_Mesh"):
+def gen_stl(
+    x_np,
+    NUM_WL=50,
+    PointsPerWL=300,
+    bit_AddTransom=1,
+    bit_AddDeckLid=0,
+    bit_RefineBowAndStern=0,
+    namepath="Hull_Mesh",
+):
     """Drop-in analogue of the reference ``gen_stl`` (writes namepath + '.stl')."""
-    tv = gen_stl_trivec(x_np, NUM_WL=NUM_WL, PointsPerWL=PointsPerWL,
-                        bit_AddTransom=bit_AddTransom,
-                        bit_AddDeckLid=bit_AddDeckLid,
-                        bit_RefineBowAndStern=bit_RefineBowAndStern)
+    tv = gen_stl_trivec(
+        x_np,
+        NUM_WL=NUM_WL,
+        PointsPerWL=PointsPerWL,
+        bit_AddTransom=bit_AddTransom,
+        bit_AddDeckLid=bit_AddDeckLid,
+        bit_RefineBowAndStern=bit_RefineBowAndStern,
+    )
     write_stl_binary(tv, namepath + ".stl")
     return tv
