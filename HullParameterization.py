@@ -1236,7 +1236,7 @@ class Hull_Parameterization:
             #Find most likely point where BB intersects Bow Curve
             A = PROF.copy()
             
-            A[3] = A[3] - self.halfBeam_BB(z, [self.BB_Prof[5]])
+            A[3] = A[3] - self.halfBeam_BB(z, [self.BB_Prof[5]])[0]
             
             
             ROOTS = np.roots(A)
