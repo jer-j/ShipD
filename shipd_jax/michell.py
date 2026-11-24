@@ -55,21 +55,22 @@ def mod_michell(Y, U, X, Z, rho, N: int = 21):
     # Z integral (Filon trapezoid)
     Kz = k0 * dz * a**2.0
     ok = Kz <= _EXP_OVERFLOW  # reference: NaN -> 0 beyond this
-    Kz_s = jnp.where(ok, Kz, 1.0)
+    Kz_s = jnp.where(ok, Kz, 1.0)[None, :]  # (1, N)
     Kzsq = Kz_s**2.0
-    w0 = (jnp.exp(Kz_s) - 1.0 - Kz_s) / Kzsq
-    wn = (jnp.exp(Kz_s) - 1.0 + jnp.exp(-Kz_s) - 1.0) / Kzsq
-    wN = (jnp.exp(-Kz_s) - 1.0 + Kz_s) / Kzsq
 
-    # weights per (j, n)
-    W = jnp.broadcast_to(wn[:, None], (N, Nz))
-    W = W.at[:, 0].set(w0)
-    W = W.at[:, -1].set(wN)
+    # Filon weights times exp(k Z[n]), with exp(Kz) folded into the exponent:
+    # exp(Kz) alone can sit near the overflow limit while exp(k Z[n])
+    # underflows, which keeps the value finite but makes its derivative
+    # inf * 0 = NaN. Kz + k Z[n] = k (Z[n] + dz) <= 0 below the top waterline,
+    # and the top waterline's weight has no exp(Kz) term.
+    kZ = k0 * Z[:, None] * (a**2.0)[None, :]  # (Nz, N), <= 0
+    EZ = jnp.exp(kZ)
+    up, down = jnp.exp(Kz_s + kZ), jnp.exp(kZ - Kz_s)
+    WEZ = (up + down - 2.0 * EZ) / Kzsq  # interior waterlines
+    WEZ = WEZ.at[0].set(((up - (1.0 + Kz_s) * EZ) / Kzsq)[0])
+    WEZ = WEZ.at[-1].set(((down - (1.0 - Kz_s) * EZ) / Kzsq)[-1])
 
-    # exp(k0 * Z[n] * a[j]^2): Z <= 0 so this never overflows
-    EZ = jnp.exp(k0 * Z[:, None] * (a**2.0)[None, :])  # (Nz, N)
-
-    F = dz * (Y @ (W.T * EZ))  # (Nx, N)
+    F = dz * (Y @ WEZ)  # (Nx, N)
 
     # X integral (Filon)
     Kx = k0 * dx * a
