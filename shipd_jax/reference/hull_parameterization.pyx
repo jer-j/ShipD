@@ -2069,7 +2069,7 @@ class Hull_Parameterization:
         for i in range(0,len(Areas)):
             
             WL = self.PCMeasurement[i]
-            Areas[i] = 2.0*np.trapz(WL[:,1], x=WL[:,0]) 
+            Areas[i] = 2.0*np.trapezoid(WL[:,1], x=WL[:,0]) 
         
         self.Areas_WP = Areas
     
@@ -2115,8 +2115,8 @@ class Hull_Parameterization:
         
         for i in range(0,len(CB)):
         
-            CB[i,0] = np.trapz(MomentX[0:i+1],x = Z[0:i+1])/self.Volumes[i]
-            CB[i,1] = np.trapz(MomentZ[0:i+1],x = Z[0:i+1])/self.Volumes[i]
+            CB[i,0] = np.trapezoid(MomentX[0:i+1],x = Z[0:i+1])/self.Volumes[i]
+            CB[i,1] = np.trapezoid(MomentZ[0:i+1],x = Z[0:i+1])/self.Volumes[i]
         
         self.VolumeCentroids = CB
     
